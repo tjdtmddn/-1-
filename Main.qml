@@ -17,6 +17,7 @@ ApplicationWindow {
     readonly property color rose: "#af5264"
     readonly property string uiFont: "Malgun Gothic"
     property string selectedDifficulty: ""
+    property string calendarSelection: ""
     readonly property string drawDifficulty: controller.availableDifficulties.includes(selectedDifficulty)
         ? selectedDifficulty : (controller.availableDifficulties[0] || "")
 
@@ -445,6 +446,7 @@ ApplicationWindow {
                                 }
                                 Rectangle {
                                     Layout.alignment: Qt.AlignHCenter
+                                    visible: !!controller.daily.difficulty
                                     implicitWidth: difficultyText.implicitWidth + 27
                                     implicitHeight: 27
                                     radius: 7
@@ -630,17 +632,32 @@ ApplicationWindow {
                                 }
                                 Repeater {
                                     model: controller.calendarDays
-                                    delegate: Rectangle {
+                                    delegate: Button {
                                         id: dayCell
                                         required property var modelData
                                         Layout.fillWidth: true
                                         Layout.preferredWidth: 1
                                         Layout.preferredHeight: 24
-                                        radius: 4
-                                        color: modelData.today ? window.lilac : "transparent"
+                                        objectName: "history-day-" + modelData.date
+                                        enabled: !!modelData.date
+                                        padding: 0
+                                        Accessible.name: modelData.date
+                                        onClicked: {
+                                            window.calendarSelection = modelData.date
+                                            const index = controller.records.findIndex(record => record.date === modelData.date)
+                                            recordList.currentIndex = index
+                                            if (index >= 0)
+                                                recordList.positionViewAtIndex(index, ListView.Contain)
+                                        }
+                                        background: Rectangle {
+                                            radius: 4
+                                            color: dayCell.modelData.today || (dayCell.enabled
+                                                && window.calendarSelection === dayCell.modelData.date) ? window.lilac : "transparent"
+                                            border.color: dayCell.visualFocus ? window.plum : "transparent"
+                                        }
 
-                                        InkText {
-                                            anchors.centerIn: parent
+                                        contentItem: InkText {
+                                            horizontalAlignment: Text.AlignHCenter
                                             text: dayCell.modelData.number
                                                 ? dayCell.modelData.number + (dayCell.modelData.completed ? " ✓" : "") : ""
                                             font.pixelSize: 12
@@ -655,13 +672,13 @@ ApplicationWindow {
 
                     InkText {
                         Layout.alignment: Qt.AlignHCenter
-                        visible: controller.records.length === 0
+                        visible: controller.records.length === 0 && !window.calendarSelection
                         text: "아직 추첨한 미션이 없어요."
                         color: window.muted
                     }
 
                     RowLayout {
-                        visible: controller.records.length > 0
+                        visible: controller.records.length > 0 || !!window.calendarSelection
                         Layout.fillWidth: true
                         spacing: 9
                         ListView {
@@ -681,13 +698,18 @@ ApplicationWindow {
                                 text: modelData.date + (modelData.completed ? "  완료" : "  미완료")
                                 fill: recordList.currentIndex === index ? window.plum : window.lilac
                                 textColor: recordList.currentIndex === index ? "white" : window.ink
-                                onClicked: recordList.currentIndex = index
+                                onClicked: {
+                                    window.calendarSelection = ""
+                                    recordList.currentIndex = index
+                                }
                             }
                             ScrollBar.vertical: ScrollBar {}
                         }
                         Rectangle {
                             id: recordDetail
-                            readonly property var entry: controller.records[recordList.currentIndex] || controller.records[0]
+                            readonly property var entry: window.calendarSelection
+                                ? controller.records.find(record => record.date === window.calendarSelection)
+                                : controller.records[recordList.currentIndex] || controller.records[0]
                             Layout.fillWidth: true
                             Layout.minimumHeight: 108
                             radius: 9
@@ -699,14 +721,14 @@ ApplicationWindow {
                                 spacing: 4
                                 InkText {
                                     Layout.alignment: Qt.AlignHCenter
-                                    text: recordDetail.entry ? recordDetail.entry.date : ""
+                                    text: recordDetail.entry ? recordDetail.entry.date : window.calendarSelection
                                     color: window.muted
                                     font.pixelSize: 12
                                 }
                                 InkText {
                                     objectName: "historyDetail"
                                     Layout.fillWidth: true
-                                    text: recordDetail.entry ? recordDetail.entry.content : ""
+                                    text: recordDetail.entry ? recordDetail.entry.content : "이 날짜에는 저장된 미션이 없습니다."
                                     wrapMode: Text.Wrap
                                     horizontalAlignment: Text.AlignHCenter
                                     font.bold: true
@@ -714,7 +736,8 @@ ApplicationWindow {
                                 InkText {
                                     Layout.alignment: Qt.AlignHCenter
                                     text: recordDetail.entry
-                                        ? recordDetail.entry.difficulty + " · " + (recordDetail.entry.completed ? "완료" : "미완료") : ""
+                                        ? (recordDetail.entry.difficulty ? recordDetail.entry.difficulty + " · " : "")
+                                          + (recordDetail.entry.completed ? "완료" : "진행 중") : ""
                                     color: window.plum
                                     font.pixelSize: 12
                                 }

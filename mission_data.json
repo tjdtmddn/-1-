@@ -10,5 +10,11 @@
   "2026-11-23": {
     "mission": "책 10쪽 읽기",
     "completed": true
+  },
+  "2026-11-24": {
+    "mission": "스트레칭 5분 하기",
+    "completed": true,
+    "mission_id": "basic-06",
+    "difficulty": "쉬움"
   }
 }

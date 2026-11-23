@@ -12,6 +12,7 @@ from PySide6.QtQuickControls2 import QQuickStyle
 from draw import draw_mission
 from draw_storage import DailyDraw, list_records, load_draw, mark_completed, save_draw
 from mission_catalog import active_missions, delete_mission, list_catalog, save_mission
+from mission_history import HistoryFormatError
 from missions import DIFFICULTIES
 
 
@@ -92,6 +93,7 @@ class MissionController(QObject):
                 day = self._month.replace(day=number) if number else None
                 days.append({
                     "number": number,
+                    "date": day.isoformat() if day else "",
                     "today": day == self._today,
                     "completed": day in self._completed_days,
                 })
@@ -125,7 +127,7 @@ class MissionController(QObject):
                  "difficulty": entry.mission.difficulty, "active": entry.active}
                 for entry in list_catalog()
             ]
-        except sqlite3.Error:
+        except (sqlite3.Error, OSError, HistoryFormatError):
             self._set_error("미션 저장소를 열 수 없습니다. 다시 시도해 주세요.")
             self.calendar_changed.emit()
             return
@@ -155,12 +157,12 @@ class MissionController(QObject):
         try:
             mission = draw_mission(active_missions(), difficulty)
             save_draw(DailyDraw(self._today, mission))
+        except (sqlite3.Error, OSError, HistoryFormatError):
+            self._set_error("오늘의 미션을 저장할 수 없습니다. 다시 시도해 주세요.")
+            return
         except ValueError:
             self.refresh()
             self._set_error("이 난이도에 활성 미션이 없습니다.")
-            return
-        except sqlite3.Error:
-            self._set_error("오늘의 미션을 저장할 수 없습니다. 다시 시도해 주세요.")
             return
         self.refresh()
 
@@ -173,7 +175,7 @@ class MissionController(QObject):
             draw = load_draw(self._today)
             if draw is not None:
                 mark_completed(draw)
-        except sqlite3.Error:
+        except (sqlite3.Error, OSError, HistoryFormatError):
             self._set_error("완료 기록을 저장할 수 없습니다. 다시 시도해 주세요.")
             return
         self.refresh()

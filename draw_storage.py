@@ -6,11 +6,13 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
-from missions import Mission
+from mission_history import MissionStore
+from missions import MISSIONS, Mission
 
 
 APP_DIRECTORY = Path(sys.executable if getattr(sys, "frozen", False) else __file__).resolve().parent
 DEFAULT_DB_PATH = APP_DIRECTORY / "daily_missions.sqlite3"
+DEFAULT_HISTORY_NAME = "mission_data.json"
 
 
 @dataclass(frozen=True)
@@ -19,91 +21,93 @@ class DailyDraw:
     mission: Mission
 
 
-@contextmanager
-def open_database(db_path: Path) -> Iterator[sqlite3.Connection]:
-    with closing(sqlite3.connect(db_path)) as connection, connection:
-        connection.execute("""
-            CREATE TABLE IF NOT EXISTS daily_draws (
-                draw_date TEXT PRIMARY KEY NOT NULL,
-                mission_id TEXT NOT NULL,
-                content TEXT NOT NULL,
-                difficulty TEXT NOT NULL
-            )
-        """)
-        connection.execute("""
-            CREATE TABLE IF NOT EXISTS mission_completions (
-                draw_date TEXT PRIMARY KEY NOT NULL REFERENCES daily_draws(draw_date)
-            )
-        """)
-        yield connection
-
-
-def _read_draw(connection: sqlite3.Connection, day: date) -> DailyDraw | None:
-    row = connection.execute(
-        "SELECT mission_id, content, difficulty FROM daily_draws WHERE draw_date = ?",
-        (day.isoformat(),),
-    ).fetchone()
-    if row is None:
-        return None
-    return DailyDraw(day, Mission(*row))
-
-
-def load_draw(day: date, db_path: Path = DEFAULT_DB_PATH) -> DailyDraw | None:
-    with open_database(db_path) as connection:
-        return _read_draw(connection, day)
-
-
-def save_draw(draw: DailyDraw, db_path: Path = DEFAULT_DB_PATH) -> DailyDraw:
-    """Save the first draw for the date and return the record that was stored."""
-    with open_database(db_path) as connection:
-        connection.execute(
-            """
-            INSERT INTO daily_draws (draw_date, mission_id, content, difficulty)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(draw_date) DO NOTHING
-            """,
-            (
-                draw.date.isoformat(),
-                draw.mission.id,
-                draw.mission.content,
-                draw.mission.difficulty,
-            ),
-        )
-        saved_draw = _read_draw(connection, draw.date)
-        if saved_draw is None:
-            raise sqlite3.DatabaseError("저장된 추첨 결과를 찾을 수 없습니다.")
-        return saved_draw
-
-
 @dataclass(frozen=True)
 class MissionRecord:
     draw: DailyDraw
     completed: bool
 
 
-def list_records(db_path: Path = DEFAULT_DB_PATH) -> list[MissionRecord]:
-    with open_database(db_path) as connection:
-        rows = connection.execute("""
-            SELECT d.draw_date, d.mission_id, d.content, d.difficulty,
-                   c.draw_date IS NOT NULL
-            FROM daily_draws AS d
-            LEFT JOIN mission_completions AS c ON c.draw_date = d.draw_date
-            ORDER BY d.draw_date DESC
-        """).fetchall()
-    return [
-        MissionRecord(DailyDraw(date.fromisoformat(day), Mission(mission_id, content, difficulty)), bool(completed))
+@contextmanager
+def open_database(db_path: Path) -> Iterator[sqlite3.Connection]:
+    with closing(sqlite3.connect(db_path)) as connection, connection:
+        yield connection
+
+
+def _legacy_records(connection: sqlite3.Connection) -> dict:
+    tables = {name for name, in connection.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('daily_draws', 'mission_completions')"
+    )}
+    if "daily_draws" not in tables:
+        return {}
+
+    selection = "SELECT d.draw_date, d.mission_id, d.content, d.difficulty"
+    if "mission_completions" in tables:
+        rows = connection.execute(
+            selection + ", c.draw_date IS NOT NULL FROM daily_draws AS d "
+            "LEFT JOIN mission_completions AS c ON c.draw_date = d.draw_date"
+        )
+    else:
+        rows = connection.execute(selection + ", 0 FROM daily_draws AS d")
+    return {
+        day: {"mission_id": mission_id, "mission": content, "difficulty": difficulty, "completed": bool(completed)}
         for day, mission_id, content, difficulty, completed in rows
-    ]
+    }
+
+
+@contextmanager
+def _open_history(db_path: Path) -> Iterator[MissionStore]:
+    db_path = Path(db_path)
+    history_path = (db_path.with_name(DEFAULT_HISTORY_NAME) if db_path.name == DEFAULT_DB_PATH.name
+                    else db_path.with_suffix(".json"))
+    with open_database(db_path) as connection:
+        # Serialize JSON read/modify/write across the desktop and CLI processes.
+        connection.execute("BEGIN IMMEDIATE")
+        store = MissionStore(history_path)
+        connection.execute("CREATE TABLE IF NOT EXISTS history_migration (source TEXT PRIMARY KEY)")
+        migrated = connection.execute("SELECT 1 FROM history_migration WHERE source = 'sqlite'").fetchone()
+        if not migrated:
+            store.merge_legacy(_legacy_records(connection))
+            connection.execute("INSERT INTO history_migration (source) VALUES ('sqlite')")
+        yield store
+
+
+_BASIC_BY_CONTENT = {mission.content: mission for mission in MISSIONS}
+
+
+def _draw_from_record(day: date, record: dict) -> DailyDraw:
+    basic = _BASIC_BY_CONTENT.get(record["mission"])
+    mission_id = record.get("mission_id") or (basic.id if basic else f"history-{day.isoformat()}")
+    difficulty = record.get("difficulty") or (basic.difficulty if basic else "")
+    return DailyDraw(day, Mission(mission_id, record["mission"], difficulty))
+
+
+def load_draw(day: date, db_path: Path = DEFAULT_DB_PATH) -> DailyDraw | None:
+    with _open_history(db_path) as store:
+        record = store.records.get(day.isoformat())
+        return _draw_from_record(day, record) if record is not None else None
+
+
+def save_draw(draw: DailyDraw, db_path: Path = DEFAULT_DB_PATH) -> DailyDraw:
+    with _open_history(db_path) as store:
+        record = store.get_daily_mission(draw.date, {
+            "mission": draw.mission.content,
+            "completed": False,
+            "mission_id": draw.mission.id,
+            "difficulty": draw.mission.difficulty,
+        })
+        return _draw_from_record(draw.date, record)
+
+
+def list_records(db_path: Path = DEFAULT_DB_PATH) -> list[MissionRecord]:
+    with _open_history(db_path) as store:
+        return [
+            MissionRecord(_draw_from_record(date.fromisoformat(day), record), record["completed"])
+            for day, record in sorted(store.records.items(), reverse=True)
+        ]
 
 
 def mark_completed(draw: DailyDraw, db_path: Path = DEFAULT_DB_PATH) -> None:
-    """Record completion for a saved draw. Repeated completion is harmless."""
-    with open_database(db_path) as connection:
-        connection.execute(
-            """
-            INSERT INTO mission_completions (draw_date)
-            SELECT draw_date FROM daily_draws WHERE draw_date = ? AND mission_id = ?
-            ON CONFLICT(draw_date) DO NOTHING
-            """,
-            (draw.date.isoformat(), draw.mission.id),
-        )
+    with _open_history(db_path) as store:
+        record = store.records.get(draw.date.isoformat())
+        if record is not None and _draw_from_record(draw.date, record).mission.id == draw.mission.id:
+            store.complete(draw.date)

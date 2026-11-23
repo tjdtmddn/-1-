@@ -5,6 +5,7 @@ from datetime import date
 from draw import draw_mission
 from draw_storage import DailyDraw, load_draw, save_draw
 from mission_catalog import active_missions
+from mission_history import HistoryFormatError
 from missions import DIFFICULTIES
 
 
@@ -41,13 +42,14 @@ def main() -> int:
     except (EOFError, KeyboardInterrupt):
         print("\n미션 선택을 취소했습니다.")
         return 1
-    except sqlite3.Error as error:
+    except (sqlite3.Error, OSError, HistoryFormatError) as error:
         print(f"추첨 결과 저장소를 사용할 수 없습니다. ({error})", file=sys.stderr)
         return 1
 
     print("\n오늘의 미션")
     print(f"날짜: {result.date.isoformat()}")
-    print(f"난이도: {result.mission.difficulty}")
+    if result.mission.difficulty:
+        print(f"난이도: {result.mission.difficulty}")
     print(f"미션: {result.mission.content}")
     return 0
 
