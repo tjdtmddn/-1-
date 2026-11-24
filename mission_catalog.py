@@ -38,6 +38,35 @@ def _open_catalog(db_path):
                     "INSERT INTO mission_catalog (mission_id, content, difficulty, active) VALUES (?, ?, ?, 1)",
                     ((mission.id, mission.content, mission.difficulty) for mission in MISSIONS),
                 )
+
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS mission_catalog_sync (
+                name TEXT PRIMARY KEY,
+                completed INTEGER NOT NULL CHECK (completed IN (0, 1))
+            )
+        """)
+        synced = connection.execute(
+            "SELECT completed FROM mission_catalog_sync WHERE name = 'basic-missions-v1'"
+        ).fetchone()
+        if synced is None:
+            next_position = connection.execute(
+                "SELECT COALESCE(MAX(position), 0) + 1 FROM mission_catalog"
+            ).fetchone()[0]
+            for mission in MISSIONS:
+                exists = connection.execute(
+                    "SELECT 1 FROM mission_catalog WHERE mission_id = ?",
+                    (mission.id,),
+                ).fetchone()
+                if exists is None:
+                    connection.execute(
+                        "INSERT INTO mission_catalog (position, mission_id, content, difficulty, active) "
+                        "VALUES (?, ?, ?, ?, 1)",
+                        (next_position, mission.id, mission.content, mission.difficulty),
+                    )
+                    next_position += 1
+            connection.execute(
+                "INSERT INTO mission_catalog_sync (name, completed) VALUES ('basic-missions-v1', 1)"
+            )
         yield connection
 
 
@@ -55,13 +84,23 @@ def active_missions(db_path=DEFAULT_DB_PATH):
 
 
 def save_mission(content, difficulty, active=True, mission_id="", db_path=DEFAULT_DB_PATH):
-    content = content.strip()
+    content = " ".join(content.split())
     if not 1 <= len(content) <= 120:
         raise ValueError("미션 내용은 1~120자로 입력해 주세요.")
     if difficulty not in DIFFICULTIES:
         raise ValueError("난이도를 선택해 주세요.")
 
     with _open_catalog(db_path) as connection:
+        normalized_content = content.casefold()
+        for row in connection.execute(
+            "SELECT mission_id, content FROM mission_catalog"
+        ).fetchall():
+            existing_id, existing_content = row
+            if existing_id != mission_id:
+                normalized_existing = " ".join(existing_content.split()).casefold()
+                if normalized_existing == normalized_content:
+                    raise ValueError("같은 내용의 미션이 이미 있습니다.")
+
         if mission_id:
             updated = connection.execute(
                 "UPDATE mission_catalog SET content = ?, difficulty = ?, active = ? WHERE mission_id = ?",

@@ -87,6 +87,70 @@ ApplicationWindow {
     }
 
     Dialog {
+        id: pinDialog
+        objectName: "adminPinDialog"
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(405, window.width - 38)
+        modal: true
+        title: "관리자 인증"
+
+        function openForCatalog() {
+            pinField.text = ""
+            pinError.text = ""
+            open()
+            pinField.forceActiveFocus()
+        }
+
+        background: Rectangle { color: window.card; radius: 12; border.color: window.edge }
+        contentItem: ColumnLayout {
+            spacing: 9
+            InkText { text: "미션관리를 위해 PIN을 입력하세요."; wrapMode: Text.Wrap }
+            TextField {
+                id: pinField
+                objectName: "adminPinField"
+                Layout.fillWidth: true
+                echoMode: TextInput.Password
+                inputMethodHints: Qt.ImhDigitsOnly
+                maximumLength: 8
+                selectByMouse: true
+                Accessible.name: "관리자 PIN"
+                onAccepted: confirmPinButton.clicked()
+            }
+            InkText {
+                id: pinError
+                visible: text.length > 0
+                Layout.fillWidth: true
+                color: window.rose
+                wrapMode: Text.Wrap
+                text: ""
+            }
+            RowLayout {
+                Layout.alignment: Qt.AlignRight
+                PaperButton { text: "취소"; fill: window.lilac; textColor: window.ink; onClicked: pinDialog.close() }
+                PaperButton {
+                    id: confirmPinButton
+                    objectName: "confirmAdminPinButton"
+                    text: "확인"
+                    enabled: pinField.text.length > 0
+                    onClicked: {
+                        if (controller.verifyAdminPin(pinField.text)) {
+                            pinDialog.close()
+                            tabs.currentIndex = 1
+                        } else {
+                            pinError.text = controller.pinLocked
+                                ? "PIN 입력 횟수를 초과했습니다. 앱을 다시 시작해 주세요."
+                                : "PIN이 올바르지 않습니다."
+                            pinField.selectAll()
+                            pinField.forceActiveFocus()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Dialog {
         id: missionEditor
         objectName: "missionEditor"
         parent: Overlay.overlay
@@ -280,13 +344,22 @@ ApplicationWindow {
 
         TabBar {
             id: tabs
+            property int catalogUnlockIndex: -1
             Layout.fillWidth: true
             Layout.leftMargin: 21
             Layout.rightMargin: 21
             Layout.topMargin: 8
             spacing: 5
             background: Item {}
-            onCurrentIndexChanged: controller.refresh()
+            onCurrentIndexChanged: {
+                if (currentIndex === 1 && !controller.adminUnlocked) {
+                    currentIndex = catalogUnlockIndex >= 0 ? catalogUnlockIndex : 0
+                    pinDialog.openForCatalog()
+                } else {
+                    catalogUnlockIndex = currentIndex
+                    controller.refresh()
+                }
+            }
 
             Repeater {
                 model: ["오늘의 미션", "미션관리", "기록"]

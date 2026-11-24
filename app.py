@@ -14,12 +14,14 @@ from draw_storage import DailyDraw, list_records, load_draw, mark_completed, sav
 from mission_catalog import active_missions, delete_mission, list_catalog, save_mission
 from mission_history import HistoryFormatError
 from missions import DIFFICULTIES
+from admin_auth import get_admin_pin, MAX_PIN_ATTEMPTS
 
 
 class MissionController(QObject):
     changed = Signal()
     calendar_changed = Signal()
     catalog_changed = Signal()
+    admin_changed = Signal()
 
     def __init__(self):
         super().__init__()
@@ -30,7 +32,29 @@ class MissionController(QObject):
         self._catalog = []
         self._completed_days = set()
         self._error = ""
+        self._admin_unlocked = False
+        self._pin_attempts = 0
         self.refresh()
+
+    @Property(bool, notify=admin_changed)
+    def adminUnlocked(self):
+        return self._admin_unlocked
+
+    @Property(bool, notify=admin_changed)
+    def pinLocked(self):
+        return self._pin_attempts >= MAX_PIN_ATTEMPTS
+
+    @Slot(str, result=bool)
+    def verifyAdminPin(self, pin):
+        if self._pin_attempts >= MAX_PIN_ATTEMPTS:
+            return False
+        if pin == get_admin_pin():
+            self._admin_unlocked = True
+            self._pin_attempts = 0
+            self.admin_changed.emit()
+            return True
+        self._pin_attempts += 1
+        return False
 
     @Property(str, notify=changed)
     def today(self):
@@ -51,6 +75,8 @@ class MissionController(QObject):
 
     @Slot(str, str, str, bool, result=str)
     def saveMission(self, mission_id, content, difficulty, active):
+        if not self._admin_unlocked:
+            return "관리자 PIN 인증이 필요합니다."
         try:
             save_mission(content, difficulty, active, mission_id)
         except ValueError as error:
@@ -62,6 +88,8 @@ class MissionController(QObject):
 
     @Slot(str, result=str)
     def deleteMission(self, mission_id):
+        if not self._admin_unlocked:
+            return "관리자 PIN 인증이 필요합니다."
         try:
             delete_mission(mission_id)
         except sqlite3.Error:
